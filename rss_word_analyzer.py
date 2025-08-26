@@ -1,0 +1,1592 @@
+#!/usr/bin/env python3
+"""
+RSS Word Frequency Analyzer
+A Flask web application that analyzes word frequency from RSS feeds
+with customizable feed selection and word filtering.
+"""
+
+from flask import Flask, render_template, request, jsonify
+import pandas as pd
+import feedparser
+import re
+from collections import Counter
+import requests
+from urllib.parse import urlparse
+import time
+from datetime import datetime
+import threading
+import json
+import os
+
+app = Flask(__name__)
+
+class RSSWordAnalyzer:
+    def __init__(self):
+        self.feeds_data = {}
+        self.default_stopwords = {
+            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 
+            'of', 'with', 'by', 'from', 'as', 'is', 'are', 'was', 'were', 'be', 
+            'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 
+            'could', 'should', 'may', 'might', 'must', 'can', 'this', 'that', 
+            'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 
+            'him', 'her', 'us', 'them', 'my', 'your', 'his', 'her', 'its', 'our', 
+            'their', 'am', 'said', 'says', 'say', 'get', 'go', 'going', 'went', 
+            'come', 'came', 'time', 'people', 'way', 'day', 'man', 'new', 'first', 
+            'last', 'long', 'great', 'little', 'own', 'other', 'old', 'right', 
+            'big', 'high', 'different', 'small', 'large', 'next', 'early', 'young', 
+            'important', 'few', 'public', 'bad', 'same', 'able', 'also', 'back', 
+            'after', 'use', 'her', 'than', 'now', 'look', 'only', 'think', 'see', 
+            'know', 'take', 'work', 'life', 'become', 'here', 'how', 'so', 'get', 
+            'want', 'make', 'give', 'hand', 'part', 'place', 'where', 'turn', 
+            'put', 'end', 'why', 'try', 'good', 'woman', 'through', 'us', 'down', 
+            'up', 'out', 'many', 'then', 'them', 'these', 'so', 'some', 'her', 
+            'would', 'make', 'like', 'into', 'him', 'has', 'two', 'more', 'very', 
+            'what', 'know', 'just', 'first', 'get', 'over', 'think', 'also', 
+            'your', 'work', 'life', 'only', 'can', 'still', 'should', 'after', 
+            'being', 'now', 'made', 'before', 'here', 'through', 'when', 'where', 
+            'much', 'too', 'any', 'may', 'well', 'such'
+        }
+        self.custom_stopwords = set()
+        self.selected_feeds = {}
+        
+        # Default RSS feeds organized by category
+        self.default_feeds = {
+            # Original defaults
+            'BBC News': 'http://feeds.bbci.co.uk/news/rss.xml',
+            'Reuters': 'http://feeds.reuters.com/reuters/topNews',
+            'CNN': 'http://rss.cnn.com/rss/edition.rss',
+            'TechCrunch': 'http://feeds.feedburner.com/TechCrunch',
+            'Hacker News': 'https://hnrss.org/frontpage',
+            
+            # Technology & Science
+            'Ars Technica': 'http://arstechnica.com/feed/',
+            'The Register': 'http://www.theregister.co.uk/headlines.atom',
+            'Schneier on Security': 'https://www.schneier.com/feed/atom/',
+            'Krebs on Security': 'https://krebsonsecurity.com/feed/',
+            'NYT Technology': 'http://rss.nytimes.com/services/xml/rss/nyt/Technology.xml',
+            'Slashdot': 'http://rss.slashdot.org/Slashdot/slashdotMain',
+            'LA Times Technology': 'http://www.latimes.com/business/technology/rss2.0.xml',
+            'GitHub Blog': 'https://github.com/blog/all.atom',
+            'Scientific American': 'http://rss.sciam.com/basic-science',
+            'Scientific American Global': 'http://rss.sciam.com/ScientificAmerican-Global',
+            'Scientific American Technology': 'http://rss.sciam.com/sciam/technology',
+            'The RISKS Digest': 'http://catless.ncl.ac.uk/risksatom.xml',
+            
+            # News & Politics
+            'NYT Top Stories': 'http://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml',
+            'NYT US News': 'http://rss.nytimes.com/services/xml/rss/nyt/US.xml',
+            'Washington Post Politics': 'http://feeds.washingtonpost.com/rss/politics',
+            'NPR Politics': 'http://www.npr.org/rss/rss.php?id=1014',
+            'Guardian US': 'http://www.guardian.co.uk/world/usa/rss',
+            'ProPublica': 'http://feeds.propublica.org/propublica/main',
+            'Talking Points Memo': 'https://talkingpointsmemo.com/news/feed',
+            'Naked Capitalism': 'https://www.nakedcapitalism.com/feed',
+            'The Real News Network': 'https://therealnews.com/feed?partner-feed=the-real-news-network',
+            'Texas Tribune': 'https://feeds.texastribune.org/feeds/main/?_ga=2.223565083.1653973109.1685112376-13535722.1664292644',
+            
+            # Business & Finance
+            'CNBC US Top News': 'https://www.cnbc.com/id/100003114/device/rss/rss.html',
+            'WSJ Technology': 'https://feeds.a.dj.com/rss/RSSWSJD.xml',
+            'Yahoo Finance': 'https://finance.yahoo.com/news/rss',
+            'Nasdaq Data Link Blog': 'https://blog.quandl.com/feed',
+            
+            # Special Interest
+            'Pluralistic (Cory Doctorow)': 'https://pluralistic.net/feed/',
+            'Dave Winer': 'http://scripting.com/rss.xml',
+            'Web3 is Going Just Great': 'https://web3isgoinggreat.com/feed.xml',
+            'Full Disclosure (Security)': 'http://seclists.org/rss/fulldisclosure.rss',
+            
+            # Reddit Communities
+            'r/ESP32': 'https://www.reddit.com/r/esp32.rss',
+            'r/HomeAssistant': 'https://www.reddit.com/r/homeassistant.rss',
+            'r/PythonPandas': 'https://www.reddit.com/r/PythonPandas.rss',
+            'r/AliExpressFinds': 'https://www.reddit.com/r/aliexpressfinds.rss',
+            
+            # International
+            'Pravda Report': 'https://feeds.feedburner.com/engpravda'
+        }
+        
+        self.load_settings()
+    
+    def load_settings(self):
+        """Load settings from file if it exists"""
+        if os.path.exists('settings.json'):
+            try:
+                with open('settings.json', 'r') as f:
+                    settings = json.load(f)
+                    self.custom_stopwords = set(settings.get('custom_stopwords', []))
+                    self.selected_feeds = settings.get('selected_feeds', self.default_feeds.copy())
+            except:
+                self.selected_feeds = self.default_feeds.copy()
+        else:
+            self.selected_feeds = self.default_feeds.copy()
+    
+    def save_settings(self):
+        """Save current settings to file"""
+        settings = {
+            'custom_stopwords': list(self.custom_stopwords),
+            'selected_feeds': self.selected_feeds
+        }
+        with open('settings.json', 'w') as f:
+            json.dump(settings, f, indent=2)
+    
+    def fetch_feed(self, feed_name, feed_url):
+        """Fetch and parse a single RSS feed"""
+        try:
+            # Set timeout and headers
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            # Parse the feed
+            feed = feedparser.parse(feed_url)
+            
+            if feed.bozo and hasattr(feed, 'bozo_exception'):
+                print(f"Warning: Issues parsing {feed_name}: {feed.bozo_exception}")
+            
+            articles = []
+            for entry in feed.entries[:50]:  # Limit to 50 most recent entries
+                title = getattr(entry, 'title', '')
+                description = getattr(entry, 'description', '') or getattr(entry, 'summary', '')
+                link = getattr(entry, 'link', '')
+                pub_date = getattr(entry, 'published', '')
+                
+                # Clean HTML tags from description
+                description = re.sub('<[^<]+?>', '', description)
+                
+                articles.append({
+                    'title': title,
+                    'description': description,
+                    'link': link,
+                    'published': pub_date,
+                    'feed_name': feed_name
+                })
+            
+            return articles
+            
+        except Exception as e:
+            print(f"Error fetching {feed_name}: {str(e)}")
+            return []
+    
+    def extract_words(self, text):
+        """Extract words from text, converting to lowercase and removing punctuation"""
+        if not text:
+            return []
+        
+        # Convert to lowercase and extract words (letters only, minimum 3 characters)
+        words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
+        return words
+    
+    def analyze_feeds(self):
+        """Fetch all selected feeds and analyze word frequency"""
+        all_articles = []
+        
+        # Fetch all feeds
+        for feed_name, feed_url in self.selected_feeds.items():
+            print(f"Fetching {feed_name}...")
+            articles = self.fetch_feed(feed_name, feed_url)
+            all_articles.extend(articles)
+        
+        if not all_articles:
+            return pd.DataFrame(), pd.DataFrame()
+        
+        # Create DataFrame
+        df = pd.DataFrame(all_articles)
+        
+        # Extract all words
+        all_words = []
+        for _, article in df.iterrows():
+            title_words = self.extract_words(article['title'])
+            desc_words = self.extract_words(article['description'])
+            all_words.extend(title_words + desc_words)
+        
+        # Filter out stopwords
+        all_stopwords = self.default_stopwords.union(self.custom_stopwords)
+        filtered_words = [word for word in all_words if word not in all_stopwords]
+        
+        # Count word frequency
+        word_counts = Counter(filtered_words)
+        
+        # Create word frequency DataFrame
+        word_freq_df = pd.DataFrame([
+            {'word': word, 'frequency': count}
+            for word, count in word_counts.most_common(200)
+        ])
+        
+        return df, word_freq_df
+
+# Initialize the analyzer
+analyzer = RSSWordAnalyzer()
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/api/feeds')
+def get_feeds():
+    """Get current feed selection"""
+    return jsonify({
+        'selected_feeds': analyzer.selected_feeds,
+        'default_feeds': analyzer.default_feeds
+    })
+
+@app.route('/api/feeds', methods=['POST'])
+def update_feeds():
+    """Update feed selection"""
+    data = request.json
+    if 'feeds' in data:
+        analyzer.selected_feeds = data['feeds']
+        analyzer.save_settings()
+    return jsonify({'status': 'success'})
+
+@app.route('/api/stopwords')
+def get_stopwords():
+    """Get current stopwords"""
+    return jsonify({
+        'custom_stopwords': list(analyzer.custom_stopwords),
+        'default_count': len(analyzer.default_stopwords)
+    })
+
+@app.route('/api/stopwords', methods=['POST'])
+def update_stopwords():
+    """Update custom stopwords"""
+    data = request.json
+    if 'stopwords' in data:
+        analyzer.custom_stopwords = set(data['stopwords'])
+        analyzer.save_settings()
+    return jsonify({'status': 'success'})
+
+@app.route('/api/analyze')
+def analyze():
+    """Perform analysis and return results"""
+    try:
+        articles_df, word_freq_df = analyzer.analyze_feeds()
+        
+        return jsonify({
+            'articles': articles_df.to_dict('records') if not articles_df.empty else [],
+            'word_frequency': word_freq_df.to_dict('records') if not word_freq_df.empty else [],
+            'total_articles': len(articles_df),
+            'total_unique_words': len(word_freq_df),
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+if __name__ == '__main__':
+    # Create templates directory and HTML template if they don't exist
+    os.makedirs('templates', exist_ok=True)
+    
+    html_template = '''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RSS Word Frequency Analyzer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+        
+        .content {
+            padding: 30px;
+        }
+        
+        .section {
+            margin-bottom: 30px;
+            padding: 25px;
+            border: 1px solid #e1e5e9;
+            border-radius: 8px;
+            background: #f8f9fa;
+        }
+        
+        .section h2 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+            font-size: 1.4rem;
+        }
+        
+        .feed-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 15px;
+        }
+        
+        .feed-item {
+            background: white;
+            padding: 15px;
+            border-radius: 6px;
+            border: 1px solid #dee2e6;
+        }
+        
+        .feed-item label {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+        }
+        
+        .feed-item input {
+            margin-right: 10px;
+        }
+        
+        .custom-feed {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        
+        .custom-feed input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+        }
+        
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: transform 0.2s;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+        
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .stopwords-input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+            min-height: 100px;
+            font-family: inherit;
+        }
+        
+        .results-section {
+            display: none;
+        }
+        
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        
+        .stat-number {
+            font-size: 2rem;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        
+        .word-cloud {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 30px;
+        }
+        
+        .word-tag {
+            background: #e9ecef;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            border: 1px solid #dee2e6;
+        }
+        
+        .word-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        
+        .word-table th,
+        .word-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #dee2e6;
+        }
+        
+        .word-table th {
+            background: #f8f9fa;
+            font-weight: 600;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #6c757d;
+        }
+        
+        .error {
+            color: #dc3545;
+            background: #f8d7da;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 15px 0;
+        }
+        
+        .success {
+            color: #155724;
+            background: #d4edda;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 15px 0;
+        }
+        
+        .articles-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+            max-height: 600px;
+            overflow-y: auto;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+        
+        .article-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #dee2e6;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            transition: transform 0.2s;
+        }
+        
+        .article-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        }
+        
+        .article-header {
+            margin-bottom: 15px;
+        }
+        
+        .article-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #2c3e50;
+            margin-bottom: 8px;
+            line-height: 1.4;
+        }
+        
+        .article-title a {
+            color: inherit;
+            text-decoration: none;
+        }
+        
+        .article-title a:hover {
+            color: #667eea;
+            text-decoration: underline;
+        }
+        
+        .article-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            font-size: 0.85rem;
+            color: #6c757d;
+        }
+        
+        .feed-badge {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+        
+        .article-description {
+            color: #495057;
+            line-height: 1.5;
+            font-size: 0.9rem;
+        }
+        
+        .articles-summary {
+            background: #e9ecef;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .feed-breakdown {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+        
+        .feed-count {
+            background: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            border: 1px solid #dee2e6;
+        }
+        
+        .toggle-articles {
+            background: none;
+            border: 1px solid #667eea;
+            color: #667eea;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+        }
+        
+        .toggle-articles:hover {
+            background: #667eea;
+            color: white;
+        }
+        
+        .feed-categories {
+            margin-bottom: 20px;
+        }
+        
+        .category-section {
+            margin-bottom: 25px;
+            border: 1px solid #e1e5e9;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        
+        .category-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 20px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: 600;
+        }
+        
+        .category-header:hover {
+            background: linear-gradient(135deg, #5a6fd8 0%, #6b4190 100%);
+        }
+        
+        .category-toggle {
+            font-size: 1.2rem;
+            transition: transform 0.3s;
+        }
+        
+        .category-toggle.collapsed {
+            transform: rotate(-90deg);
+        }
+        
+        .category-feeds {
+            background: #f8f9fa;
+            padding: 20px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 12px;
+        }
+        
+        .category-feeds.collapsed {
+            display: none;
+        }
+        
+        .category-controls {
+            padding: 15px 20px;
+            background: #e9ecef;
+            border-top: 1px solid #dee2e6;
+            display: flex;
+            gap: 10px;
+        }
+        
+        .category-btn {
+            background: none;
+            border: 1px solid #667eea;
+            color: #667eea;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: all 0.2s;
+        }
+        
+        .category-btn:hover {
+            background: #667eea;
+            color: white;
+        }
+        
+        .analysis-controls {
+            display: flex;
+            gap: 20px;
+            align-items: end;
+            flex-wrap: wrap;
+        }
+        
+        .control-group {
+            flex: 1;
+            min-width: 250px;
+        }
+        
+        .limit-selector {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e1e5e9;
+            border-radius: 6px;
+            font-size: 1rem;
+            background: white;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+        
+        .limit-selector:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        .limit-selector:hover {
+            border-color: #667eea;
+        }
+        
+        .word-limit-info {
+            background: #e7f3ff;
+            border: 1px solid #b3d9ff;
+            border-radius: 6px;
+            padding: 12px;
+            margin: 15px 0;
+            font-size: 0.9rem;
+            color: #0066cc;
+        }
+        
+        .results-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        
+        .results-title {
+            color: #2c3e50;
+            margin: 0;
+            font-size: 1.4rem;
+        }
+        
+        .results-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        .results-limit-selector {
+            padding: 8px 12px;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            background: white;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 RSS Word Frequency Analyzer</h1>
+            <p>Analyze word frequency from your favorite RSS feeds</p>
+        </div>
+        
+        <div class="content">
+            <div class="section">
+                <h2>📡 RSS Feed Selection</h2>
+                <p style="margin-bottom: 15px; color: #6c757d;">
+                    Choose from our curated collection of RSS feeds organized by category, or add your own custom feeds.
+                </p>
+                <div id="feeds-container">
+                    <div class="feed-categories" id="feed-categories">
+                        <!-- Feed categories will be loaded here -->
+                    </div>
+                    <div class="custom-feed">
+                        <input type="text" id="custom-feed-name" placeholder="Feed Name">
+                        <input type="url" id="custom-feed-url" placeholder="RSS Feed URL">
+                        <button class="btn" onclick="addCustomFeed()">Add Feed</button>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h2>🚫 Custom Stop Words</h2>
+                <p style="margin-bottom: 15px; color: #6c757d;">
+                    Add words to exclude from analysis (one per line). Common words like "the", "and", "is" are already excluded.
+                </p>
+                <textarea id="stopwords" class="stopwords-input" 
+                         placeholder="Enter words to exclude, one per line..."></textarea>
+                <button class="btn" onclick="saveStopwords()" style="margin-top: 15px;">Save Stop Words</button>
+            </div>
+            
+            <div class="section">
+                <h2>🔍 Analysis</h2>
+                <div class="analysis-controls">
+                    <div class="control-group">
+                        <label for="word-limit" style="display: block; margin-bottom: 8px; font-weight: 600; color: #2c3e50;">
+                            📊 Word Count Display Limit
+                        </label>
+                        <select id="word-limit" class="limit-selector">
+                            <option value="10">Top 10 Words</option>
+                            <option value="25">Top 25 Words</option>
+                            <option value="50" selected>Top 50 Words</option>
+                            <option value="100">Top 100 Words</option>
+                            <option value="200">Top 200 Words</option>
+                            <option value="500">Top 500 Words</option>
+                            <option value="all">All Words</option>
+                        </select>
+                        <small style="color: #6c757d; display: block; margin-top: 5px;">
+                            Choose how many top words to display in the word cloud and table
+                        </small>
+                    </div>
+                    <button class="btn" id="analyze-btn" onclick="performAnalysis()">Analyze Word Frequency</button>
+                </div>
+                <div id="loading" class="loading" style="display: none;">
+                    <p>🔄 Fetching and analyzing RSS feeds...</p>
+                </div>
+            </div>
+            
+            <div class="section results-section" id="results-section">
+                <h2>📈 Results</h2>
+                <div id="stats" class="stats"></div>
+                <div id="word-cloud" class="word-cloud"></div>
+                
+                <div style="margin: 30px 0;">
+                    <h3 style="color: #2c3e50; margin-bottom: 15px;">📰 Articles Analyzed</h3>
+                    <div id="articles-container"></div>
+                </div>
+                
+                <table class="word-table">
+                    <thead>
+                        <tr>
+                            <th>Rank</th>
+                            <th>Word</th>
+                            <th>Frequency</th>
+                        </tr>
+                    </thead>
+                    <tbody id="word-table-body"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentFeeds = {};
+        let currentResults = null; // Store the full results for re-display
+        
+        // Load feeds on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            loadFeeds();
+            loadStopwords();
+            
+            // Sync the limit selectors
+            const analysisLimit = document.getElementById('word-limit');
+            const resultsLimit = document.getElementById('results-limit');
+            
+            analysisLimit.addEventListener('change', function() {
+                const resultsLimit = document.getElementById('results-limit');
+                if (resultsLimit) {
+                    resultsLimit.value = this.value;
+                }
+            });
+        });
+        
+        async function loadFeeds() {
+            try {
+                const response = await fetch('/api/feeds');
+                const data = await response.json();
+                currentFeeds = data.selected_feeds;
+                renderFeeds(data.selected_feeds, data.default_feeds);
+            } catch (error) {
+                showError('Error loading feeds: ' + error.message);
+            }
+        }
+        
+        function renderFeeds(selectedFeeds, defaultFeeds) {
+            const categorizedFeeds = categorizeFeeds(defaultFeeds);
+            const feedCategories = document.getElementById('feed-categories');
+            feedCategories.innerHTML = '';
+            
+            for (const [categoryName, feeds] of Object.entries(categorizedFeeds)) {
+                const categorySection = document.createElement('div');
+                categorySection.className = 'category-section';
+                
+                const categoryHeader = document.createElement('div');
+                categoryHeader.className = 'category-header';
+                categoryHeader.onclick = () => toggleCategory(categoryName);
+                categoryHeader.innerHTML = `
+                    <span>${categoryName}</span>
+                    <span class="category-toggle" id="toggle-${categoryName}">▼</span>
+                `;
+                
+                const categoryFeedsDiv = document.createElement('div');
+                categoryFeedsDiv.className = 'category-feeds';
+                categoryFeedsDiv.id = `feeds-${categoryName}`;
+                
+                for (const [name, url] of Object.entries(feeds)) {
+                    const feedItem = document.createElement('div');
+                    feedItem.className = 'feed-item';
+                    feedItem.innerHTML = `
+                        <label>
+                            <input type="checkbox" ${selectedFeeds[name] ? 'checked' : ''} 
+                                   onchange="toggleFeed('${name}', '${url}', this.checked)">
+                            <div>
+                                <strong>${name}</strong><br>
+                                <small style="color: #6c757d;">${url.length > 50 ? url.substring(0, 50) + '...' : url}</small>
+                            </div>
+                        </label>
+                    `;
+                    categoryFeedsDiv.appendChild(feedItem);
+                }
+                
+                const categoryControls = document.createElement('div');
+                categoryControls.className = 'category-controls';
+                categoryControls.innerHTML = `
+                    <button class="category-btn" onclick="selectAllInCategory('${categoryName}')">Select All</button>
+                    <button class="category-btn" onclick="deselectAllInCategory('${categoryName}')">Deselect All</button>
+                `;
+                
+                categorySection.appendChild(categoryHeader);
+                categorySection.appendChild(categoryFeedsDiv);
+                categorySection.appendChild(categoryControls);
+                feedCategories.appendChild(categorySection);
+            }
+            
+            // Add custom feeds section
+            const customFeeds = getCustomFeeds(selectedFeeds, defaultFeeds);
+            if (Object.keys(customFeeds).length > 0) {
+                const customSection = document.createElement('div');
+                customSection.className = 'category-section';
+                customSection.innerHTML = `
+                    <div class="category-header" onclick="toggleCategory('Custom')">
+                        <span>🔧 Custom Feeds</span>
+                        <span class="category-toggle" id="toggle-Custom">▼</span>
+                    </div>
+                    <div class="category-feeds" id="feeds-Custom">
+                        ${Object.entries(customFeeds).map(([name, url]) => `
+                            <div class="feed-item">
+                                <label>
+                                    <input type="checkbox" ${selectedFeeds[name] ? 'checked' : ''} 
+                                           onchange="toggleFeed('${name}', '${url}', this.checked)">
+                                    <div>
+                                        <strong>${name}</strong><br>
+                                        <small style="color: #6c757d;">${url.length > 50 ? url.substring(0, 50) + '...' : url}</small>
+                                    </div>
+                                </label>
+                            </div>
+                        `).join('')}
+                    </div>
+                    <div class="category-controls">
+                        <button class="category-btn" onclick="selectAllInCategory('Custom')">Select All</button>
+                        <button class="category-btn" onclick="deselectAllInCategory('Custom')">Deselect All</button>
+                    </div>
+                `;
+                feedCategories.appendChild(customSection);
+            }
+        }
+        
+        function categorizeFeeds(defaultFeeds) {
+            const categories = {
+                '📺 News & Politics': {},
+                '💻 Technology & Science': {},
+                '💼 Business & Finance': {},
+                '🎯 Special Interest': {},
+                '💬 Reddit Communities': {},
+                '🌍 International': {}
+            };
+            
+            const techKeywords = ['tech', 'ars', 'register', 'security', 'github', 'scientific', 'slashdot', 'risks'];
+            const newsKeywords = ['nyt', 'guardian', 'post', 'npr', 'propublica', 'talking', 'naked', 'tribune', 'real news'];
+            const businessKeywords = ['cnbc', 'wsj', 'yahoo finance', 'nasdaq'];
+            const redditKeywords = ['reddit.com'];
+            const internationalKeywords = ['pravda'];
+            
+            for (const [name, url] of Object.entries(defaultFeeds)) {
+                const lowerName = name.toLowerCase();
+                const lowerUrl = url.toLowerCase();
+                
+                if (redditKeywords.some(keyword => lowerUrl.includes(keyword))) {
+                    categories['💬 Reddit Communities'][name] = url;
+                } else if (internationalKeywords.some(keyword => lowerName.includes(keyword))) {
+                    categories['🌍 International'][name] = url;
+                } else if (techKeywords.some(keyword => lowerName.includes(keyword)) || lowerUrl.includes('github')) {
+                    categories['💻 Technology & Science'][name] = url;
+                } else if (businessKeywords.some(keyword => lowerName.includes(keyword)) || lowerName.includes('finance')) {
+                    categories['💼 Business & Finance'][name] = url;
+                } else if (newsKeywords.some(keyword => lowerName.includes(keyword)) || lowerName.includes('politics') || lowerName.includes('news')) {
+                    categories['📺 News & Politics'][name] = url;
+                } else {
+                    categories['🎯 Special Interest'][name] = url;
+                }
+            }
+            
+            // Remove empty categories
+            return Object.fromEntries(
+                Object.entries(categories).filter(([_, feeds]) => Object.keys(feeds).length > 0)
+            );
+        }
+        
+        function getCustomFeeds(selectedFeeds, defaultFeeds) {
+            const customFeeds = {};
+            for (const [name, url] of Object.entries(selectedFeeds)) {
+                if (!defaultFeeds[name]) {
+                    customFeeds[name] = url;
+                }
+            }
+            return customFeeds;
+        }
+        
+        function toggleCategory(categoryName) {
+            const feedsDiv = document.getElementById(`feeds-${categoryName}`);
+            const toggleIcon = document.getElementById(`toggle-${categoryName}`);
+            
+            if (feedsDiv.classList.contains('collapsed')) {
+                feedsDiv.classList.remove('collapsed');
+                toggleIcon.classList.remove('collapsed');
+                toggleIcon.textContent = '▼';
+            } else {
+                feedsDiv.classList.add('collapsed');
+                toggleIcon.classList.add('collapsed');
+                toggleIcon.textContent = '▶';
+            }
+        }
+        
+        function selectAllInCategory(categoryName) {
+            const feedsDiv = document.getElementById(`feeds-${categoryName}`);
+            const checkboxes = feedsDiv.querySelectorAll('input[type="checkbox"]');
+            checkboxes.forEach(checkbox => {
+                if (!checkbox.checked) {
+                    checkbox.checked = true;
+                    checkbox.dispatchEvent(new Event('change'));
+                }
+            });
+        }
+        
+        function deselectAllInCategory(categoryName) {
+            const feedsDiv = document.getElementById(`feeds-${categoryName}`);
+            const checkboxes = feedsDiv.querySelectorAll('input[type="checkbox"]');
+            checkboxes.forEach(checkbox => {
+                if (checkbox.checked) {
+                    checkbox.checked = false;
+                    checkbox.dispatchEvent(new Event('change'));
+                }
+            });
+        }
+        
+        function toggleFeed(name, url, checked) {
+            if (checked) {
+                currentFeeds[name] = url;
+            } else {
+                delete currentFeeds[name];
+            }
+            saveFeeds();
+        }
+        
+        async function saveFeeds() {
+            try {
+                await fetch('/api/feeds', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({feeds: currentFeeds})
+                });
+            } catch (error) {
+                showError('Error saving feeds: ' + error.message);
+            }
+        }
+        
+        function addCustomFeed() {
+            const name = document.getElementById('custom-feed-name').value.trim();
+            const url = document.getElementById('custom-feed-url').value.trim();
+            
+            if (!name || !url) {
+                showError('Please enter both feed name and URL');
+                return;
+            }
+            
+            currentFeeds[name] = url;
+            saveFeeds();
+            loadFeeds(); // Refresh the display
+            
+            // Clear inputs
+            document.getElementById('custom-feed-name').value = '';
+            document.getElementById('custom-feed-url').value = '';
+            
+            showSuccess('Custom feed added successfully!');
+        }
+        
+        async function loadStopwords() {
+            try {
+                const response = await fetch('/api/stopwords');
+                const data = await response.json();
+                document.getElementById('stopwords').value = data.custom_stopwords.join('\\n');
+            } catch (error) {
+                showError('Error loading stopwords: ' + error.message);
+            }
+        }
+        
+        async function saveStopwords() {
+            const stopwordsText = document.getElementById('stopwords').value;
+            const stopwords = stopwordsText.split('\\n')
+                .map(word => word.trim().toLowerCase())
+                .filter(word => word.length > 0);
+            
+            try {
+                await fetch('/api/stopwords', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({stopwords: stopwords})
+                });
+                showSuccess('Stop words saved successfully!');
+            } catch (error) {
+                showError('Error saving stopwords: ' + error.message);
+            }
+        }
+        
+        async function performAnalysis() {
+            console.log('🔍 Starting analysis...');
+            
+            if (Object.keys(currentFeeds).length === 0) {
+                showError('Please select at least one RSS feed');
+                console.log('❌ No feeds selected');
+                return;
+            }
+            
+            console.log('📡 Selected feeds:', Object.keys(currentFeeds));
+            
+            const analyzeBtn = document.getElementById('analyze-btn');
+            const loading = document.getElementById('loading');
+            const resultsSection = document.getElementById('results-section');
+            
+            // Show loading state
+            analyzeBtn.disabled = true;
+            loading.style.display = 'block';
+            resultsSection.style.display = 'none';
+            
+            try {
+                console.log('🌐 Fetching analysis from server...');
+                const response = await fetch('/api/analyze');
+                console.log('📨 Response status:', response.status);
+                
+                const data = await response.json();
+                console.log('📊 Analysis data received:', {
+                    hasArticles: !!data.articles,
+                    articleCount: data.articles ? data.articles.length : 0,
+                    hasWordFreq: !!data.word_frequency,
+                    wordCount: data.word_frequency ? data.word_frequency.length : 0,
+                    totalArticles: data.total_articles,
+                    totalUniqueWords: data.total_unique_words,
+                    hasError: !!data.error
+                });
+                
+                if (data.error) {
+                    console.log('❌ Server error:', data.error);
+                    showError('Analysis error: ' + data.error);
+                    return;
+                }
+                
+                if (!data.articles) {
+                    console.log('⚠️ No articles in response');
+                    showError('No articles received from analysis');
+                    return;
+                }
+                
+                if (!data.word_frequency) {
+                    console.log('⚠️ No word frequency data in response');
+                    showError('No word frequency data received from analysis');
+                    return;
+                }
+                
+                console.log('✅ Data validation passed, displaying results...');
+                displayResults(data);
+                resultsSection.style.display = 'block';
+                console.log('✅ Results section shown');
+                
+            } catch (error) {
+                console.log('❌ Analysis error:', error);
+                console.log('Error details:', error.message, error.stack);
+                showError('Error performing analysis: ' + error.message);
+            } finally {
+                analyzeBtn.disabled = false;
+                loading.style.display = 'none';
+                console.log('🔄 Analysis complete, UI restored');
+            }
+        }
+        
+        function displayResults(data) {
+            console.log('🎨 displayResults called with:', {
+                hasData: !!data,
+                articlesLength: data?.articles?.length || 0,
+                wordFreqLength: data?.word_frequency?.length || 0,
+                totalArticles: data?.total_articles,
+                totalUniqueWords: data?.total_unique_words
+            });
+            
+            if (!data) {
+                console.log('❌ No data provided to displayResults');
+                showError('No data received for display');
+                return;
+            }
+            
+            currentResults = data; // Store for re-display
+            console.log('💾 Results stored in currentResults');
+            
+            // Display stats
+            console.log('📊 Updating stats section...');
+            const stats = document.getElementById('stats');
+            if (!stats) {
+                console.log('❌ Stats element not found');
+                showError('Stats display element not found');
+                return;
+            }
+            
+            stats.innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-number">${data.total_articles || 0}</div>
+                    <div>Articles Analyzed</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">${data.total_unique_words || 0}</div>
+                    <div>Unique Words</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">${Object.keys(currentFeeds).length}</div>
+                    <div>RSS Feeds</div>
+                </div>
+            `;
+            console.log('✅ Stats section updated');
+            
+            // Display articles (this doesn't change with word limit)
+            console.log('📰 Displaying articles...');
+            if (data.articles && data.articles.length > 0) {
+                displayArticles(data.articles);
+                console.log('✅ Articles displayed');
+            } else {
+                console.log('⚠️ No articles to display');
+                showError('No articles found in the analysis results');
+            }
+            
+            // Update display with selected limit
+            console.log('📋 Updating results display...');
+            if (data.word_frequency && data.word_frequency.length > 0) {
+                updateResultsDisplay();
+                console.log('✅ Word frequency results displayed');
+            } else {
+                console.log('⚠️ No word frequency data to display');
+                showError('No word frequency data found in the analysis results');
+            }
+        }
+        
+        function updateResultsDisplay() {
+            console.log('🔄 updateResultsDisplay called');
+            console.log('📊 Current results available:', {
+                hasCurrentResults: !!currentResults,
+                hasWordFrequency: !!(currentResults && currentResults.word_frequency),
+                wordFreqLength: currentResults && currentResults.word_frequency ? currentResults.word_frequency.length : 0
+            });
+            
+            if (!currentResults || !currentResults.word_frequency) {
+                console.log('⚠️ No results available for display');
+                const wordLimitInfo = document.getElementById('word-limit-info');
+                if (wordLimitInfo) {
+                    wordLimitInfo.style.display = 'block';
+                    wordLimitInfo.innerHTML = '⚠️ No word frequency data available to display';
+                }
+                return;
+            }
+            
+            const resultsLimitElement = document.getElementById('results-limit');
+            if (!resultsLimitElement) {
+                console.log('⚠️ Results limit selector not found, using default value');
+                // Use a default value when the element doesn't exist yet
+                var selectedLimit = '50';
+            } else {
+                var selectedLimit = resultsLimitElement.value;
+            }
+            
+            console.log('📊 Selected display limit:', selectedLimit);
+            
+            const wordLimitInfo = document.getElementById('word-limit-info');
+            const data = currentResults;
+            
+            // Calculate display count
+            let displayCount = selectedLimit === 'all' ? data.word_frequency.length : parseInt(selectedLimit);
+            displayCount = Math.min(displayCount, data.word_frequency.length);
+            
+            console.log('📊 Display count calculated:', displayCount);
+            
+            // Show info about current display
+            if (wordLimitInfo) {
+                wordLimitInfo.style.display = 'block';
+                wordLimitInfo.innerHTML = `
+                    📊 Displaying <strong>${displayCount}</strong> of <strong>${data.total_unique_words}</strong> unique words
+                    ${selectedLimit !== 'all' && displayCount < data.total_unique_words ? 
+                      ` (${((displayCount / data.total_unique_words) * 100).toFixed(1)}% of total)` : ''}
+                `;
+                console.log('✅ Word limit info updated');
+            }
+            
+            // Update word cloud
+            console.log('☁️ Updating word cloud...');
+            displayWordCloud(data.word_frequency.slice(0, displayCount));
+            
+            // Update word table
+            console.log('📋 Updating word table...');
+            displayWordTable(data.word_frequency.slice(0, displayCount));
+            
+            // Now that results are displayed, sync the results-limit selector if it exists
+            if (resultsLimitElement && resultsLimitElement.value !== selectedLimit) {
+                resultsLimitElement.value = selectedLimit;
+                console.log('🔄 Synced results-limit selector to:', selectedLimit);
+            }
+            
+            console.log('✅ updateResultsDisplay completed');
+        }
+        
+        function displayWordCloud(wordFrequency) {
+            console.log('☁️ displayWordCloud called with:', {
+                hasData: !!wordFrequency,
+                dataLength: wordFrequency ? wordFrequency.length : 0,
+                firstItem: wordFrequency && wordFrequency.length > 0 ? wordFrequency[0] : null
+            });
+            
+            const wordCloud = document.getElementById('word-cloud');
+            if (!wordCloud) {
+                console.log('❌ Word cloud element not found');
+                showError('Word cloud display element not found');
+                return;
+            }
+            
+            if (!wordFrequency || wordFrequency.length === 0) {
+                console.log('⚠️ No word frequency data provided to word cloud');
+                wordCloud.innerHTML = '<p style="color: #6c757d; text-align: center; padding: 20px;">No words to display in cloud.</p>';
+                return;
+            }
+            
+            try {
+                wordCloud.innerHTML = '';
+                
+                // Limit word cloud to reasonable size for performance
+                const cloudLimit = Math.min(wordFrequency.length, 100);
+                console.log(`☁️ Creating word cloud with ${cloudLimit} words`);
+                
+                wordFrequency.slice(0, cloudLimit).forEach((item, index) => {
+                    if (!item || !item.word || !item.frequency) {
+                        console.log(`⚠️ Invalid word item at index ${index}:`, item);
+                        return;
+                    }
+                    
+                    const wordTag = document.createElement('span');
+                    wordTag.className = 'word-tag';
+                    const fontSize = Math.max(0.8, 1.2 - (index / cloudLimit) * 0.4);
+                    wordTag.style.fontSize = fontSize + 'rem';
+                    wordTag.textContent = `${item.word} (${item.frequency})`;
+                    wordCloud.appendChild(wordTag);
+                });
+                
+                // Add note if word cloud is limited
+                if (wordFrequency.length > cloudLimit) {
+                    const note = document.createElement('div');
+                    note.style.cssText = 'margin-top: 15px; color: #6c757d; font-style: italic; font-size: 0.9rem;';
+                    note.textContent = `Word cloud shows top ${cloudLimit} words. See table below for complete list.`;
+                    wordCloud.appendChild(note);
+                }
+                
+                console.log('✅ Word cloud created successfully');
+                
+            } catch (error) {
+                console.log('❌ Error creating word cloud:', error);
+                wordCloud.innerHTML = '<p style="color: #dc3545; text-align: center; padding: 20px;">Error creating word cloud: ' + error.message + '</p>';
+            }
+        }
+        
+        function displayWordTable(wordFrequency) {
+            console.log('📋 displayWordTable called with:', {
+                hasData: !!wordFrequency,
+                dataLength: wordFrequency ? wordFrequency.length : 0,
+                hasCurrentResults: !!currentResults,
+                firstItem: wordFrequency && wordFrequency.length > 0 ? wordFrequency[0] : null
+            });
+            
+            const tableBody = document.getElementById('word-table-body');
+            if (!tableBody) {
+                console.log('❌ Word table body element not found');
+                showError('Word table body element not found');
+                return;
+            }
+            
+            if (!wordFrequency || wordFrequency.length === 0) {
+                console.log('⚠️ No word frequency data provided to table');
+                tableBody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: #6c757d; padding: 20px;">No words to display in table.</td></tr>';
+                return;
+            }
+            
+            if (!currentResults || !currentResults.word_frequency) {
+                console.log('❌ No current results available for percentage calculation');
+                showError('Missing current results data for table display');
+                return;
+            }
+            
+            try {
+                tableBody.innerHTML = '';
+                
+                // Calculate total frequency for percentages
+                const totalFrequency = currentResults.word_frequency.reduce((sum, item) => sum + (item.frequency || 0), 0);
+                console.log('📊 Total frequency for percentages:', totalFrequency);
+                
+                wordFrequency.forEach((item, index) => {
+                    if (!item || !item.word || item.frequency === undefined) {
+                        console.log(`⚠️ Invalid word item at index ${index}:`, item);
+                        return;
+                    }
+                    
+                    const percentage = totalFrequency > 0 ? ((item.frequency / totalFrequency) * 100).toFixed(2) : '0.00';
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${index + 1}</td>
+                        <td><strong>${item.word}</strong></td>
+                        <td>${item.frequency}</td>
+                        <td>${percentage}%</td>
+                    `;
+                    tableBody.appendChild(row);
+                });
+                
+                console.log('✅ Word table created successfully');
+                
+            } catch (error) {
+                console.log('❌ Error creating word table:', error);
+                tableBody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: #dc3545; padding: 20px;">Error creating table: ' + error.message + '</td></tr>';
+            }
+        }
+        
+        function displayArticles(articles) {
+            console.log('📰 displayArticles called with:', {
+                hasArticles: !!articles,
+                articlesLength: articles ? articles.length : 0,
+                firstArticle: articles && articles.length > 0 ? articles[0] : null
+            });
+            
+            const container = document.getElementById('articles-container');
+            if (!container) {
+                console.log('❌ Articles container not found');
+                showError('Articles container element not found');
+                return;
+            }
+            
+            if (!articles || articles.length === 0) {
+                console.log('⚠️ No articles provided');
+                container.innerHTML = '<p style="color: #6c757d; text-align: center; padding: 20px;">No articles found to display.</p>';
+                return;
+            }
+            
+            try {
+                // Count articles by feed
+                console.log('📊 Counting articles by feed...');
+                const feedCounts = {};
+                articles.forEach(article => {
+                    if (article && article.feed_name) {
+                        feedCounts[article.feed_name] = (feedCounts[article.feed_name] || 0) + 1;
+                    }
+                });
+                console.log('📊 Feed counts:', feedCounts);
+                
+                // Create summary
+                console.log('📝 Creating articles summary...');
+                const summaryDiv = document.createElement('div');
+                summaryDiv.className = 'articles-summary';
+                summaryDiv.innerHTML = `
+                    <div class="feed-breakdown">
+                        ${Object.entries(feedCounts).map(([feed, count]) => 
+                            `<div class="feed-count"><strong>${feed}:</strong> ${count} articles</div>`
+                        ).join('')}
+                    </div>
+                    <button class="toggle-articles" onclick="toggleArticlesView(this)">
+                        Hide Articles
+                    </button>
+                `;
+                
+                // Create articles grid
+                console.log('🏗️ Creating articles grid...');
+                const articlesGrid = document.createElement('div');
+                articlesGrid.className = 'articles-grid';
+                articlesGrid.id = 'articles-grid';
+                
+                const displayArticles = articles.slice(0, 100); // Show first 100 articles
+                console.log(`📋 Displaying ${displayArticles.length} articles`);
+                
+                displayArticles.forEach((article, index) => {
+                    if (!article) {
+                        console.log(`⚠️ Article at index ${index} is null/undefined`);
+                        return;
+                    }
+                    
+                    const articleCard = document.createElement('div');
+                    articleCard.className = 'article-card';
+                    
+                    const publishedDate = article.published ? 
+                        new Date(article.published).toLocaleDateString() : 'Unknown';
+                    
+                    const description = article.description ? 
+                        (article.description.length > 200 ? 
+                            article.description.substring(0, 200) + '...' : 
+                            article.description) : 
+                        'No description available';
+                    
+                    const title = article.title || 'Untitled';
+                    const feedName = article.feed_name || 'Unknown Feed';
+                    const link = article.link || '';
+                    
+                    articleCard.innerHTML = `
+                        <div class="article-header">
+                            <div class="article-title">
+                                ${link ? 
+                                    `<a href="${link}" target="_blank" rel="noopener noreferrer">${title}</a>` : 
+                                    title}
+                            </div>
+                            <div class="article-meta">
+                                <span class="feed-badge">${feedName}</span>
+                                <span>${publishedDate}</span>
+                            </div>
+                        </div>
+                        <div class="article-description">${description}</div>
+                    `;
+                    
+                    articlesGrid.appendChild(articleCard);
+                });
+                
+                container.innerHTML = '';
+                container.appendChild(summaryDiv);
+                container.appendChild(articlesGrid);
+                
+                console.log('✅ Articles display completed successfully');
+                
+            } catch (error) {
+                console.log('❌ Error in displayArticles:', error);
+                container.innerHTML = '<p style="color: #dc3545; text-align: center; padding: 20px;">Error displaying articles: ' + error.message + '</p>';
+            }
+        }
+        
+        function toggleArticlesView(button) {
+            const articlesGrid = document.getElementById('articles-grid');
+            if (articlesGrid.style.display === 'none') {
+                articlesGrid.style.display = 'grid';
+                button.textContent = 'Hide Articles';
+            } else {
+                articlesGrid.style.display = 'none';
+                button.textContent = 'Show Articles';
+            }
+        }
+        
+        function showError(message) {
+            console.log('❌ Showing error:', message);
+            const existing = document.querySelector('.error');
+            if (existing) existing.remove();
+            
+            const error = document.createElement('div');
+            error.className = 'error';
+            error.textContent = message;
+            document.querySelector('.content').insertBefore(error, document.querySelector('.content').firstChild);
+            
+            setTimeout(() => error.remove(), 8000); // Show errors longer for debugging
+        }
+        
+        function showSuccess(message) {
+            console.log('✅ Showing success:', message);
+            const existing = document.querySelector('.success');
+            if (existing) existing.remove();
+            
+            const success = document.createElement('div');
+            success.className = 'success';
+            success.textContent = message;
+            document.querySelector('.content').insertBefore(success, document.querySelector('.content').firstChild);
+            
+            setTimeout(() => success.remove(), 3000);
+        }
+        
+        // Add global error handler to catch any uncaught errors
+        window.addEventListener('error', function(event) {
+            console.log('🚨 Global error caught:', {
+                message: event.message,
+                filename: event.filename,
+                lineno: event.lineno,
+                colno: event.colno,
+                error: event.error
+            });
+            showError('JavaScript error: ' + event.message);
+        });
+        
+        // Add unhandled promise rejection handler
+        window.addEventListener('unhandledrejection', function(event) {
+            console.log('🚨 Unhandled promise rejection:', event.reason);
+            showError('Promise error: ' + (event.reason ? event.reason.toString() : 'Unknown error'));
+        });
+    </script>
+</body>
+</html>'''
+    
+    # Write the HTML template
+    with open('templates/index.html', 'w') as f:
+        f.write(html_template)
+    
+    print("🚀 Starting RSS Word Frequency Analyzer...")
+    print("📊 Open your browser to: http://localhost:5000")
+    print("⏹️  Press Ctrl+C to stop the server")
+    
+    app.run(debug=True, host='0.0.0.0', port=5000)
